@@ -1,58 +1,57 @@
 package com.bemyears.aifirst.bemyears;
 
+import android.content.Context;
 import android.content.pm.PackageManager;
-import android.media.MediaPlayer;
+import android.media.AudioFormat;
+import android.media.AudioRecord;
 import android.media.MediaRecorder;
 import android.os.Environment;
+import android.os.Vibrator;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.os.Bundle;
-import android.widget.Button;
+import android.widget.TextView;
 import android.widget.Toast;
-
-import java.io.IOException;
-import java.util.Random;
 
 import static android.Manifest.permission.RECORD_AUDIO;
 import static android.Manifest.permission.WRITE_EXTERNAL_STORAGE;
 
 public class MainActivity extends AppCompatActivity {
 
-    MediaRecorder myAudioRecorder = new MediaRecorder();
-    String outputFile = "/sdcard/sound/test";
-
-    Button buttonStart, buttonStop, buttonPlayLastRecordAudio,
-            buttonStopPlayingRecording ;
+    private static final int sampleRate = 8000;
+    private AudioRecord audio;
+    private int bufferSize;
+    private double lastLevel = 0;
+    private double averageLevel = 20;
+    private double threshold = 0;
+    private Thread thread;
+    private static final int SAMPLE_DELAY = 75;
+    String outputFile = Environment.getExternalStorageDirectory().getAbsolutePath();
     String AudioSavePathInDevice = null;
-    MediaRecorder mediaRecorder ;
-    String RandomAudioFileName = "ABCDEFGHIJKLMNOP";
+    MediaRecorder mediaRecorder;
     public static final int RequestPermissionCode = 1;
-    MediaPlayer mediaPlayer;
+    private TextView textView;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        textView = (TextView) findViewById(R.id.DecibelLabel);
+
 
         if(checkPermission()) {
 
-            AudioSavePathInDevice =
-                    Environment.getExternalStorageDirectory().getAbsolutePath() + "/" + "AudioRecording.3gp";
-
-            MediaRecorderReady();
+            AudioSavePathInDevice = outputFile + "AudioRecording.m4a";
+            AudioRecorderReady();
+            //MediaRecorderReady();
 
             try {
-                mediaRecorder.prepare();
-                mediaRecorder.start();
-                Toast.makeText(MainActivity.this, "Recording started",
-                        Toast.LENGTH_LONG).show();
-                Thread.sleep(6000);
-                mediaRecorder.stop();
-                Toast.makeText(MainActivity.this, "Recording Completed",
-                        Toast.LENGTH_LONG).show();
-                } catch (InterruptedException | IOException e) {
-                e.printStackTrace();
+                bufferSize = AudioRecord
+                        .getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO,
+                                AudioFormat.ENCODING_PCM_16BIT);
+            } catch (Exception e) {
+                android.util.Log.e("TrackingFlow", "Exception", e);
             }
         }
         else {
@@ -60,12 +59,98 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    protected void onResume() {
+        super.onResume();
+        audio = new AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT, bufferSize);
+
+        audio.startRecording();
+        thread = new Thread(new Runnable() {
+            public void run() {
+                while(thread != null && !thread.isInterrupted()){
+                    //Let's make the thread sleep for a the approximate sampling time
+                    try{Thread.sleep(SAMPLE_DELAY);}catch(InterruptedException ie){ie.printStackTrace();}
+                    readAudioBuffer();//After this call we can get the last value assigned to the lastLevel variable
+
+                    runOnUiThread(new Runnable() {
+
+                        @Override
+                        public void run() {
+                            averageLevel = (lastLevel * 4 + averageLevel)/5;
+                            threshold = averageLevel + 30/averageLevel;
+
+                            textView.setText("lastlevel: " + lastLevel +
+                            "\n threshold: " + threshold+
+                            "\n average: " + averageLevel);
+
+                            if (lastLevel > 0 && lastLevel > threshold) {
+                                Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+                                v.vibrate(1000);
+                                try {
+                                    Thread.sleep(2000);
+                                } catch (InterruptedException e) {
+                                    e.printStackTrace();
+                                }
+                            }
+                        }
+                    });
+                }
+            }
+        });
+        thread.start();
+    }
+
+    private void readAudioBuffer() {
+
+        try {
+            short[] buffer = new short[bufferSize];
+
+            int bufferReadResult = 1;
+
+            if (audio != null) {
+
+                // Sense the voice...
+                bufferReadResult = audio.read(buffer, 0, bufferSize);
+                double sumLevel = 0;
+                for (int i = 0; i < bufferReadResult; i++) {
+                    sumLevel += buffer[i];
+                }
+                lastLevel = Math.abs((sumLevel / bufferReadResult));
+            }
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    public void AudioRecorderReady() {
+        int sampleRate = 8000;
+        try {
+            int bufferSize = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT);
+            audio = new AudioRecord(MediaRecorder.AudioSource.MIC, sampleRate,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT, bufferSize);
+        } catch (Exception e) {
+            android.util.Log.e("TrackingFlow", "Exception", e);
+        }
+    }
+
     public void MediaRecorderReady(){
         mediaRecorder=new MediaRecorder();
-        mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+        mediaRecorder.setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION);
         mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
         mediaRecorder.setAudioEncoder(MediaRecorder.OutputFormat.AMR_NB);
-        mediaRecorder.setOutputFile(AudioSavePathInDevice);
+        mediaRecorder.setOutputFile("/dev/null");
+        //mediaRecorder.setOutputFile(AudioSavePathInDevice);
+    }
+
+    public double getAmplitude() {
+        if (mediaRecorder != null)
+            return  mediaRecorder.getMaxAmplitude();
+        else
+            return 0;
     }
 
     private void requestPermission() {
@@ -102,5 +187,19 @@ public class MainActivity extends AppCompatActivity {
                 RECORD_AUDIO);
         return result == PackageManager.PERMISSION_GRANTED &&
                 result1 == PackageManager.PERMISSION_GRANTED;
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        thread.interrupt();
+        thread = null;
+        try {
+            if (audio != null) {
+                audio.stop();
+                audio.release();
+                audio = null;
+            }
+        } catch (Exception e) {e.printStackTrace();}
     }
 }
